@@ -1,0 +1,154 @@
+﻿<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Migration</title>
+  <link rel="stylesheet" href="https://stackedit.io/style.css" />
+</head>
+
+<body class="stackedit">
+  <div class="stackedit__html"><h1 id="zero-downtime-aws-to-azure-migration-proposal">Zero-Downtime AWS-to-Azure Migration Proposal</h1>
+<p><strong>Kịch bản</strong>:</p>
+<p>Migrate một ứng dụng cũ đang chạy (5 năm) và lượng users sử dụng hằng ngày rất nhiều dẫn đến dữ liệu database đang cập nhật liên tục. Hãy migrate ứng dụng này từ AWS lên Azure. (Ứng dụng đang chạy trên EKS)<br>
+<strong>Yêu cầu</strong>:</p>
+<ul>
+<li>Quá trình migrate không có overcut hay maintainance screen.</li>
+<li>Đảm bảo không mất dữ liệu, phải đảm bảo đầy đủ 100% recode mới và cũ.</li>
+<li>Đặc biệt là zero downtime.</li>
+</ul>
+<h2 id="i.--phân-tích-vấn-đề-tìm-giải-pháp-và-công-nghệ-triển-khai">I.  Phân tích vấn đề, tìm giải pháp và công nghệ triển khai:</h2>
+<p><strong>Vấn đề 01</strong>: Database live, write liên tục, không chấp nhận việc mất bất kì dữ liệu và độ trễ gây ảnh hưởng đến ứng dụng và database.</p>
+<ul>
+<li><strong>Giải pháp</strong>: Sử dụng các công nghệ migration hỗ trợ Bi-directional Replication (Sao chép 2 chiều) kết hợp với việc sử dụng các giải pháp Inter-Cloud Interconnect.</li>
+<li><strong>Lý do giải pháp này hiệu quả</strong>:  Bi-directional Replication đây là giải pháp hữu ích để ghi và sync đồng thời cả 2 database ở 2 hạ tầng cũng lúc (cả 2 đều là master) thay vì dạng Write-Read (Replicas thông thường), cho phép cả 2 đồng bộ 2 chiều với nhau cực nhanh theo thời gian thực (realtime). Để việc này hiệu quả hơn cần kết hợp với phần hạ tầng network riêng để tránh latency cao. Có thể dùng VPN site-to-site hoặc thông qua các dịch vụ mạng internet backbone (AWS Direct Connect vào Azure ExpressRoute) hoặc thuê đường truyền riêng Equinix Fabric hoặc Megaport. Việc này giúp giảm đáng kể độ trễ giữa 2 hạ tầng (theo ước tính em đã tham khảo trên mạng thì độ trễ &lt; 2ms). Một số tính năng nâng cao như Parallel Processing, In-Memory Streaming, Loopback Prevention, Conflict Detection … cho phép đồng bộ và write data cực nhanh giữa 2 database mà hạn chế tối đa các lỗi về confliction.</li>
+<li><strong>Công nghệ đề xuất</strong>: Qlik Replicate (trước đây là Attunity) hoặc Oracle GoldenGate.</li>
+</ul>
+<p><strong>Vấn đề 02</strong>: Vấn đề tương thích về công nghệ:</p>
+<ul>
+<li><strong>Giải pháp</strong>:Chọn các công nghệ phù hợp và có các tính năng tương tự với hạ tầng cũ.</li>
+<li><strong>Lý do giải pháp này hiệu quả</strong>:  Hiện nay đa phần các nền tảng public cloud thì họ đều cung cấp các dịch vụ hạ tầng gần như giống nhau về mặt chức năng và mục đích, chỉ khác nhau một xíu về việc cấu hình cũng như phương thức hoạt động, nên việc lựa chọn các dịch vụ tương thích là không quá khó khăn.</li>
+<li><strong>Công nghệ đề xuất</strong>: EKS -&gt; AKS, VPC -&gt; VNET, CloudFront -&gt; Frontdoor. …</li>
+</ul>
+<p><strong>Vấn đề 03</strong>: Zero downtime thực sự (không phải “minimal downtime 30 giây”)</p>
+<ul>
+<li><strong>Giải pháp</strong>: Dùng phương pháp Canary routing thay vì Blue/Green hoặc Mirror Traffic.</li>
+<li><strong>Lý do giải pháp này hiệu quả</strong>: Để việc này thực sự zero downtime thay vì sử dụng các giải pháp như em đã trình bày trong lúc phỏng vấn là dùng cơ chế Blue/Green để chuyển hướng traffic hay dùng tính năng Mirror traffic để route đồng thời traffic trên cả 2 hạ tầng và cả 2 database thì 2 giải pháp này đều có khả năng downtime (dù nhỏ) , drop collections và duplicate collections nếu xử lý không khéo hoặc trong lúc switch traffic. Vì thế thay vì dùng 2 giải pháp trên ta sẽ dùng phương pháp Canary. Và tại sao phương pháp này hiệu quả? Vì khi kết hợp với các database hỗ trợ Bi-directional Replication thì nó sẽ write được cả 2 database với độ trễ cực kì thấp và realtime. Cho phép cả 2 database đồng thời có thể ghi xuống và đồng bộ cho nhau cực nhanh. Ngoài ra vì nó chia lượng traffic request vào cả 2 hạ tầng dựa trên weight mà chúng ta set (vd: 80% cho hạ tầng cũ và 20% cho hạ tầng mới) nó sẽ tránh được cả 2 đều ghi xuống các record giống nhau gây conflict như trong trường hợp sử dụng giải pháp Mirror traffic ở trên, vì trường hợp này cả 2 ghi xuống các request khác nhau nên record là sẽ khác nhau đan xen giữa 2 database. Tránh tình trạng ghi trùng và ghi thiếu collections trong lúc switch traffic giữa hạ tầng cũ và mới (vì cái này không phải là chuyển hướng hoàn toàn như blue/green mà chia ra). Vì thế giải pháp này chuyển đổi mượt hơn, gần như users sẽ không cảm nhận được bất kì sự thay đổi nào.</li>
+<li><strong>Công nghệ đề xuất</strong>: Route53 hoặc Azure DNS/Traffic Manager có cấu hình routing traffic dựa trên weight.</li>
+</ul>
+<p><strong>Note</strong>: Các giải pháp trên không phải chỉ dựa trên lý thuyết suông  mà đã được một số cty lớn, đặc biệt là các cty bên mảng ngân hàng áp dụng. Mặc dù một số bên sử dụng các công cụ migration database realtime khác nhau, nhưng đa phần chúng đều hỗ trợ tính năng Bi-directional Replication hoặc Master-Master cho phép ghi đồng bộ trên các database và có khả năng sync realtime record. Dưới đây là các link về các cty đó:</p>
+<ul>
+<li><a href="https://assets.qlik.com/image/upload/v1738101287/qlik/docs/resource-library/customer-stories/resource-cs-united-federal-credit-union-en_mj6hyw.pdf">Ngân hàng của Mỹ United Federal credit union</a></li>
+<li><a href="https://cdn.featuredcustomers.com/CustomerCaseStudy.document/qlik_bank-btpn_564375_yHHfqPX.pdf">Ngân hàng của Indo Bank BTPN</a></li>
+<li><a href="https://www.qlik.com/us/solutions/customers/customer-stories/ambank-group">Ngân hàng của Malaysia AmBank Group</a></li>
+<li><a href="https://aws.amazon.com/solutions/case-studies/vpbank-migration-case-study/">Ngân hàng của Việt Nam VPbank (bài báo này ko ghi rõ là sử dụng Qlink,nhưng trang chủ của Qlink có nói)</a></li>
+</ul>
+<h2 id="ii.-kiến-trúc-tổng-thể"><strong>II. Kiến trúc tổng thể</strong></h2>
+<p>Dựa vào các giải pháp trên ta có diagram và các bước thực hiện sau:<br>
+<img src="https://raw.githubusercontent.com/ThanhLam2396/images/main/bestarion-light.svg" alt="enter image description here"></p>
+<h2 id="iii.-các-bước-thực-hiện"><strong>III. Các bước thực hiện</strong></h2>
+<h3 id="chuẩn-bị-lớp-hạ-tầng-mạng-thiết-lập-đường-internet-riêng--backbone">Chuẩn Bị Lớp Hạ Tầng Mạng: “Thiết lập đường Internet riêng” ( Backbone)</h3>
+<p>Giả sử trong trường hợp này “tiền không quan trọng đối với cty”, nên sẽ không đồng bộ dữ liệu qua Internet công cộng mà thiết lập một đường net riêng để đảm bảo. Ta cần đường truyền độ trễ cực thấp (&lt; 2ms) và băng thông lớn.</p>
+<ul>
+<li>
+<p><strong>Giải pháp:</strong> Inter-Cloud Interconnect.</p>
+</li>
+<li>
+<p><strong>Triển khai:</strong> Thuê đường truyền riêng từ Equinix Fabric hoặc Megaport để đấu nối trực tiếp AWS Direct Connect vào Azure ExpressRoute.</p>
+</li>
+<li>
+<p><strong>Tác dụng:</strong> Biến AWS và Azure thành một mạng nội bộ thống nhất. Server Azure truy cập Database AWS nhanh như đang ở cùng một mạng với độ trễ thấp. Điều này loại bỏ nỗi lo về độ trễ khi đồng bộ dữ liệu.</p>
+</li>
+</ul>
+<p><strong>Giai đoạn 1</strong>: Preparation ( giai đoạn chuẩn bị mất từ 2-4 tuần)</p>
+<ol>
+<li>Trên Azure cloud sẽ tạo các hạ tầng network trước như Vnet, Subnet, cấu hình Internet Gateway và các NAT Gateway để đảm bảo sẵn sàng về hạ tầng network khi migrate các dịch vụ từ AWS sang Azure</li>
+<li>Setup VPN Site-to-Site hoặc ExpressRoute Private Peering giữa AWS → Azure (Cấu hình để latency thấp ~40-80ms và bật các cấu hình bảo mật) [Bỏ qua nếu đã chuẩn bị được hạ tầng mạng bằng cách thuê các Cloud Exchange như Equinix Fabric hoặc Megaport để thiết lập đường kết nối giữa 2 cloud]</li>
+<li>Tạo Azure Migrate project → discover toàn bộ EC2 , và các services bên trong để nắm chắc được là có bao nhiêu dịch vụ cần phải migrate.</li>
+<li>Tạo Azure Database Migration Service (DMS) premium trong VNet có connectivity đến AWS RDS.</li>
+<li>Chọn các loại database tương thích để migrate:
+<ul>
+<li>SQL Server →  Azure SQL Managed Instance</li>
+<li>MySQL → Azure Database for MySQL Flexible Server</li>
+<li>PostgreSQL → Azure Database for PostgreSQL Flexible Server</li>
+<li>Aurora → MySQL compatible</li>
+</ul>
+</li>
+<li>Chọn tool replication chính:
+<ul>
+<li>Trường hợp này em sẽ chọn Qlik Replicate vì nó hỗ trợ bidirectional real-time, conflict detection, và có sẵn trong Microsoft Marketplace luôn. Dễ dàng để install lên hạ tầng của Azure. Một số option khác có thể chọn như Oracle GoldenGate (này hơi đắt) hoặc Debezium (cái này e đã có nói trong lúc phỏng vấn).</li>
+</ul>
+</li>
+<li>Deploy Qlik Replicate lên Azure VM (Windows hoặc Linux) trong cùng VNet với DMS.</li>
+<li>Tạo task Full Load + Store Changes + Apply Changes (bidirectional):
+<ul>
+<li>Source = AWS RDS</li>
+<li>Target = Azure SQL MI / PostgreSQL Flexible</li>
+<li>Enable “Apply conflicts” để hỗ trợ xử lý các trường hợp confliction cơ bản.</li>
+<li>Latency thường &lt;1 giây nếu qua ExpressRoute.</li>
+</ul>
+</li>
+<li>Chạy Full Load (offline schema + data) vào giờ thấp điểm, hoặc dùng DMS làm initial load nhanh hơn).</li>
+<li>Khi full load xong → bật bidirectional replication,  khi này cả 2 đều trở thành master  và có thể ghi data cả 2 bên và chúng sẽ sync cho nhau realtime.</li>
+<li>Verify:
+<ul>
+<li>Row count mỗi table</li>
+<li>Checksum MD5/SHA256 trên các table critical (script có thể tự viết bằng Python)</li>
+<li>Chạy critical business report trên cả 2 DB → so sánh kết quả (automate bằng Azure DevOps pipeline).</li>
+</ul>
+</li>
+<li>Chạy song song 1 thời gian để theo dõi, theo e thì ít nhất 7 ngày để phát hiện conflict (nếu có).</li>
+</ol>
+<p><strong>Giai đoạn 2</strong>: Application and Services Migration</p>
+<ol>
+<li>Migrate các services đi kèm:
+<ul>
+<li>ElasticCache -&gt; Azure Cache for Redis</li>
+<li>WAF -&gt;  Web Application Firewall</li>
+<li>CloudWatch -&gt; Azure Monitor</li>
+<li>S3 -&gt; Azure Blob Storage</li>
+</ul>
+</li>
+<li>Migrate Application:	<br>
+Vì ứng dụng đang chạy trên EKS tức là trên nền Kubernetes nên việc migrate applications AKS khá đơn giản và không cần thay đổi gì nhiều về phần yaml của ứng dụng. Chỉ cần cấu hình lại 1 số services liên quan tới phần network như ingress hay Api Application Gateway vì phần này đa phần sẽ phải dùng với Loadbalance của cloud providers (Mỗi cloud mỗi cấu hình khác nên cần chỉnh sửa lại phần này 1 xíu, còn lại thì hầu như giữ nguyên). Nếu áp dụng mô hình GitOps cho CI/CD thì quá trình này đơn giản hơn, chỉ cần cài ArgoCD lên cụm, cấu hình connect với Git repo và sync thì các ứng dụng sẽ được deploy lên cụm AKS mới.</li>
+</ol>
+<p><strong>Giai đoạn 3</strong>: Traffic Shifting với True Zero Downtime Cutover</p>
+<ol>
+<li>Hạ thấp chỉ số TTL (Time To Live) của tên miền (Domain) xuống mức thấp. Để việc chuyển hướng DNS diễn ra nhanh chóng (nên làm vài ngày trước đó).</li>
+<li>Setup Azure Front Door Premium (đúng ra cái này nên dùng Route53 thì sẽ ổn hơn vì không cần phải chuyển Domain, nhưng trường hợp này yêu cầu phải chuyển hết sang Azure nên sẻ phải dùng FrontDoor để tạo pool và chia traffic):
+<ul>
+<li>Backend pool 1: AWS ALB (dùng custom domain hoặc CNAME)</li>
+<li>Backend pool 2: Azure Load Balancer / Application Gateway / Front Door origin Azure</li>
+<li>Routing rule: Priority routing (Priority 1 = AWS, Priority 2 = Azure)</li>
+<li>Bật Health check để check /health endpoint đảm bảo cả 2 môi trường đều hoạt động tốt khi route traffic vào.</li>
+<li>Apply các role WAF giống như AWS WAF.</li>
+</ul>
+</li>
+<li>Canary phase:
+<ul>
+<li>Những ngày đầu tiên (1-3): thì route traffic 99.9% AWS, 0.1% Azure (dùng Front Door weighted routing để điều chỉnh các thông số này).</li>
+<li>Theo dõi error rate, latency, business metrics (order count, revenue) trên cả 2 môi trường → phải giống nhau 100.00%. Và phải kiểm tra phần database, đặc biệt là các record được ghi vào database từ cụm mới xem thử có đúng schema chưa, đồng thời cũng phải test về độ trễ, về sự đồng bộ của 2 database để đảm bảo nó hoạt động tốt.</li>
+<li>Sau thời gian theo dõi thì tăng dần traffic từ từ lên ở cụm Azure: 5% → 10% → 30% → 70% → 100%.</li>
+</ul>
+</li>
+<li>Final cutover:
+<ul>
+<li>Khi traffic 100% Azure ổn định được 3 ngày đến 1 tuần thì đổi Priority 1 = Azure, Priority 2 = AWS.</li>
+<li>Vì không stop bất cứ thứ gì nên sẽ zero downtime thực sự.</li>
+<li>DNS TTL đặt 60 giây từ đầu project (sau này khi ứng dụng chạy ổn có thể nâng lên)</li>
+<li>Monitor trong 24h đầu phải cực kì kỹ (Azure Monitor + Application Insights + Grafana).</li>
+</ul>
+</li>
+</ol>
+<p><strong>Giai đoạn 4</strong>: Post-cutover &amp; Cleanup (Sau thời gian hoạt động ổn định và theo dõi đủ dài)</p>
+<ol>
+<li>Giữ bidirectional replication thêm 7 ngày sau cutover. Phòng trường hợp có vấn đề gì xảy ra thì rollback nhanh bằng cách switch lại traffic về cụm cũ.</li>
+<li>Chạy final data reconciliation full (checksum toàn bộ DB), này có thể viết bằng script hoặc dùng tools để check.</li>
+<li>Tắt replication → tắt AWS resources dần.</li>
+<li>Xoá hết các tài nguyên còn lại của ứng dụng trên AWS.</li>
+</ol>
+</div>
+</body>
+
+</html>
